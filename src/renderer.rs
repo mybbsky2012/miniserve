@@ -1,21 +1,27 @@
+use std::time::SystemTime;
+
 use actix_web::http::StatusCode;
 use chrono::{DateTime, Utc};
 use chrono_humanize::Humanize;
-use clap::{crate_name, crate_version};
+use clap::{crate_name, crate_version, ValueEnum};
+use fast_qr::{convert::svg::SvgBuilder, qr::QRCodeError, QRBuilder};
 use maud::{html, Markup, PreEscaped, DOCTYPE};
-use std::time::SystemTime;
-use strum::IntoEnumIterator;
+use strum::{Display, IntoEnumIterator};
 
 use crate::auth::CurrentUser;
+use crate::consts;
 use crate::listing::{Breadcrumb, Entry, QueryParameters, SortingMethod, SortingOrder};
 use crate::{archive::ArchiveMethod, MiniserveConfig};
 
+#[allow(clippy::too_many_arguments)]
 /// Renders the file listing
 pub fn page(
     entries: Vec<Entry>,
+    readme: Option<(String, String)>,
+    abs_url: impl AsRef<str>,
     is_root: bool,
     query_params: QueryParameters,
-    breadcrumbs: Vec<Breadcrumb>,
+    breadcrumbs: &[Breadcrumb],
     encoded_dir: &str,
     conf: &MiniserveConfig,
     current_user: Option<&CurrentUser>,
@@ -31,11 +37,13 @@ pub fn page(
     let upload_action = build_upload_action(&upload_route, encoded_dir, sort_method, sort_order);
     let mkdir_action = build_mkdir_action(&upload_route, encoded_dir);
 
-    let title_path = breadcrumbs
-        .iter()
-        .map(|el| el.name.clone())
-        .collect::<Vec<_>>()
-        .join("/");
+    let title_path = breadcrumbs_to_path_string(breadcrumbs);
+
+    let upload_allowed = conf.allowed_upload_dir.is_empty()
+        || conf
+            .allowed_upload_dir
+            .iter()
+            .any(|x| encoded_dir.starts_with(&format!("/{}", x)));
 
     html! {
         (DOCTYPE)
@@ -87,7 +95,10 @@ pub fn page(
                         }
                     }
                 }
-                (color_scheme_selector(conf.show_qrcode, conf.hide_theme_selector))
+                nav {
+                    (qr_spoiler(conf.show_qrcode, abs_url))
+                    (color_scheme_selector(conf.hide_theme_selector))
+                }
                 div.container {
                     span #top { }
                     h1.title dir="ltr" {
@@ -114,7 +125,7 @@ pub fn page(
                             }
                         }
                         div.toolbar_box_group {
-                            @if conf.file_upload {
+                            @if conf.file_upload && upload_allowed {
                                 div.toolbar_box {
                                     form id="file_submit" action=(upload_action) method="POST" enctype="multipart/form-data" {
                                         p { "Select a file to upload or drag it anywhere into the window" }
@@ -163,6 +174,14 @@ pub fn page(
                             @for entry in entries {
                                 (entry_row(entry, sort_method, sort_order, false))
                             }
+                        }
+                    }
+                    @if let Some(readme) = readme {
+                        div id="readme" {
+                            h3 id="readme-filename" { (readme.0) }
+                            div id="readme-contents" {
+                                (PreEscaped (readme.1))
+                            };
                         }
                     }
                     a.back href="#top" {
@@ -214,6 +233,25 @@ pub fn raw(entries: Vec<Entry>, is_root: bool) -> Markup {
             }
         }
     }
+}
+
+/// Renders the QR code SVG
+fn qr_code_svg(url: impl AsRef<str>, margin: usize) -> Result<String, QRCodeError> {
+    let qr = QRBuilder::new(url.as_ref().into())
+        .ecl(consts::QR_EC_LEVEL)
+        .build()?;
+    let svg = SvgBuilder::default().margin(margin).to_str(&qr);
+
+    Ok(svg)
+}
+
+/// Build a path string from a list of breadcrumbs.
+fn breadcrumbs_to_path_string(breadcrumbs: &[Breadcrumb]) -> String {
+    breadcrumbs
+        .iter()
+        .map(|el| el.name.clone())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 // Partial: version footer
@@ -280,32 +318,49 @@ const THEME_PICKER_CHOICES: &[(&str, &str)] = &[
     ("Monokai (dark)", "monokai"),
 ];
 
-pub const THEME_SLUGS: &[&str] = &["squirrel", "archlinux", "zenburn", "monokai"];
+#[derive(Debug, Clone, ValueEnum, Display)]
+pub enum ThemeSlug {
+    #[strum(serialize = "squirrel")]
+    Squirrel,
+    #[strum(serialize = "archlinux")]
+    Archlinux,
+    #[strum(serialize = "zenburn")]
+    Zenburn,
+    #[strum(serialize = "monokai")]
+    Monokai,
+}
 
-/// Partial: color scheme selector
-fn color_scheme_selector(show_qrcode: bool, hide_theme_selector: bool) -> Markup {
+/// Partial: qr code spoiler
+fn qr_spoiler(show_qrcode: bool, content: impl AsRef<str>) -> Markup {
     html! {
-        nav {
-            @if show_qrcode {
-                div {
-                    p onmouseover="document.querySelector('#qrcode').src = `?qrcode=${encodeURIComponent(window.location.href)}`" {
-                        "QR code"
-                    }
-                    div.qrcode {
-                        img #qrcode alt="QR code" title="QR code of this page";
+        @if show_qrcode {
+            div {
+                p {
+                    "QR code"
+                }
+                div.qrcode #qrcode title=(PreEscaped(content.as_ref())) {
+                    @match qr_code_svg(content, consts::SVG_QR_MARGIN) {
+                        Ok(svg) => (PreEscaped(svg)),
+                        Err(err) => (format!("QR generation error: {:?}", err)),
                     }
                 }
             }
-            @if !hide_theme_selector {
-                div {
-                    p {
-                        "Change theme..."
-                    }
-                    ul.theme {
-                        @for color_scheme in THEME_PICKER_CHOICES {
-                            li.(format!("theme_{}", color_scheme.1)) {
-                                (color_scheme_link(color_scheme))
-                            }
+        }
+    }
+}
+
+/// Partial: color scheme selector
+fn color_scheme_selector(hide_theme_selector: bool) -> Markup {
+    html! {
+        @if !hide_theme_selector {
+            div {
+                p {
+                    "Change theme..."
+                }
+                ul.theme {
+                    @for color_scheme in THEME_PICKER_CHOICES {
+                        li.(format!("theme_{}", color_scheme.1)) {
+                            (color_scheme_link(color_scheme))
                         }
                     }
                 }
@@ -458,7 +513,7 @@ fn entry_row(
                         @if !raw {
                             @if let Some(size) = entry.size {
                                 span.mobile-info.size {
-                                    (size)
+                                    (maud::display(size))
                                 }
                             }
                         }
@@ -467,7 +522,7 @@ fn entry_row(
             }
             td.size-cell {
                 @if let Some(size) = entry.size {
-                    (size)
+                    (maud::display(size))
                 }
             }
             td.date-cell {

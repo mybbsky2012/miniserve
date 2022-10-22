@@ -1,25 +1,24 @@
-use std::io;
-use std::io::Write;
+use std::io::{self, Write};
 use std::net::{IpAddr, SocketAddr, TcpListener};
 use std::thread;
 use std::time::Duration;
 
 use actix_files::NamedFile;
-use actix_web::web;
-use actix_web::{http::header::ContentType, Responder};
-use actix_web::{middleware, App, HttpRequest, HttpResponse};
+use actix_web::{
+    http::header::ContentType, middleware, web, App, HttpRequest, HttpResponse, Responder,
+};
 use actix_web_httpauth::middleware::HttpAuthentication;
 use anyhow::Result;
-use clap::{crate_version, IntoApp, Parser};
-use clap_complete::generate;
+use clap::{crate_version, CommandFactory, Parser};
+use fast_qr::QRBuilder;
 use log::{error, warn};
-use qrcodegen::{QrCode, QrCodeEcc};
 use yansi::{Color, Paint};
 
 mod archive;
 mod args;
 mod auth;
 mod config;
+mod consts;
 mod errors;
 mod file_upload;
 mod listing;
@@ -35,7 +34,7 @@ fn main() -> Result<()> {
     if let Some(shell) = args.print_completions {
         let mut clap_app = args::CliArgs::command();
         let app_name = clap_app.get_name().to_string();
-        generate(shell, &mut clap_app, app_name, &mut io::stdout());
+        clap_complete::generate(shell, &mut clap_app, app_name, &mut io::stdout());
         return Ok(());
     }
 
@@ -239,13 +238,13 @@ async fn run(miniserve_config: MiniserveConfig) -> Result<(), ContextualError> {
             .iter()
             .filter(|url| !url.contains("//127.0.0.1:") && !url.contains("//[::1]:"))
         {
-            match QrCode::encode_text(url, QrCodeEcc::Low) {
+            match QRBuilder::new(url.clone()).ecl(consts::QR_EC_LEVEL).build() {
                 Ok(qr) => {
                     println!("QR code for {}:", Color::Green.paint(url).bold());
-                    print_qr(&qr);
+                    qr.print();
                 }
                 Err(e) => {
-                    error!("Failed to render QR to terminal: {}", e);
+                    error!("Failed to render QR to terminal: {:?}", e);
                 }
             };
         }
@@ -299,7 +298,7 @@ fn configure_app(app: &mut web::ServiceConfig, conf: &MiniserveConfig) {
             if conf.spa {
                 files = files.default_handler(
                     NamedFile::open(&conf.path.join(index_file))
-                        .expect("Cant open SPA index file."),
+                        .expect("Can't open SPA index file."),
                 );
             }
         }
@@ -350,32 +349,4 @@ async fn css() -> impl Responder {
     HttpResponse::Ok()
         .insert_header(ContentType(mime::TEXT_CSS))
         .body(css)
-}
-
-// Prints to the console two inverted QrCodes side by side.
-fn print_qr(qr: &QrCode) {
-    let border = 4;
-    let size = qr.size() + 2 * border;
-
-    for y in (0..size).step_by(2) {
-        for x in 0..2 * size {
-            let inverted = x >= size;
-            let (x, y) = (x % size - border, y - border);
-
-            //each char represents two vertical modules
-            let (mod1, mod2) = match inverted {
-                false => (qr.get_module(x, y), qr.get_module(x, y + 1)),
-                true => (!qr.get_module(x, y), !qr.get_module(x, y + 1)),
-            };
-            let c = match (mod1, mod2) {
-                (false, false) => ' ',
-                (true, false) => '▀',
-                (false, true) => '▄',
-                (true, true) => '█',
-            };
-            print!("{0}", c);
-        }
-        println!();
-    }
-    println!();
 }

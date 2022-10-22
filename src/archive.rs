@@ -1,11 +1,11 @@
+use std::fs::File;
+use std::io::{Cursor, Read, Write};
+use std::path::{Path, PathBuf};
+
 use actix_web::http::header::ContentEncoding;
 use libflate::gzip::Encoder;
 use serde::Deserialize;
-use std::fs::File;
-use std::io::{Cursor, Read, Write};
-use std::path::Path;
-use std::path::PathBuf;
-use strum_macros::{Display, EnumIter, EnumString};
+use strum::{Display, EnumIter, EnumString};
 use tar::Builder;
 use zip::{write, ZipWriter};
 
@@ -250,7 +250,7 @@ where
                 continue;
             }
             let current_entry_name = entry_path.file_name().ok_or_else(|| {
-                ContextualError::InvalidPathError("Invalid file or direcotory name".to_string())
+                ContextualError::InvalidPathError("Invalid file or directory name".to_string())
             })?;
             if entry_metadata.is_file() {
                 let mut f = File::open(&entry_path)

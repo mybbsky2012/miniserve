@@ -16,6 +16,8 @@ use rustls_pemfile as pemfile;
 use crate::{
     args::{CliArgs, MediaType},
     auth::RequiredAuth,
+    file_upload::sanitize_path,
+    renderer::ThemeSlug,
 };
 
 /// Possible characters for random routes
@@ -60,10 +62,10 @@ pub struct MiniserveConfig {
     pub css_route: String,
 
     /// Default color scheme
-    pub default_color_scheme: String,
+    pub default_color_scheme: ThemeSlug,
 
     /// Default dark mode color scheme
-    pub default_color_scheme_dark: String,
+    pub default_color_scheme_dark: ThemeSlug,
 
     /// The name of a directory index file to serve, like "index.html"
     ///
@@ -86,6 +88,9 @@ pub struct MiniserveConfig {
 
     /// Enable file upload
     pub file_upload: bool,
+
+    /// List of allowed upload directories
+    pub allowed_upload_dir: Vec<String>,
 
     /// HTML accept attribute value
     pub uploadable_media_type: Option<String>,
@@ -122,6 +127,9 @@ pub struct MiniserveConfig {
 
     /// If enabled, display a wget command to recursively download the current directory
     pub show_wget_footer: bool,
+
+    /// If enabled, render the readme from the current directory
+    pub readme: bool,
 
     /// If set, use provided rustls config for TLS
     #[cfg(feature = "tls")]
@@ -244,7 +252,19 @@ impl MiniserveConfig {
             overwrite_files: args.overwrite_files,
             show_qrcode: args.qrcode,
             mkdir_enabled: args.mkdir_enabled,
-            file_upload: args.file_upload,
+            file_upload: args.allowed_upload_dir.is_some(),
+            allowed_upload_dir: args
+                .allowed_upload_dir
+                .unwrap_or_default()
+                .iter()
+                .map(|x| {
+                    sanitize_path(x, false)
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .replace('\\', "/")
+                })
+                .collect(),
             uploadable_media_type,
             tar_enabled: args.enable_tar,
             tar_gz_enabled: args.enable_tar_gz,
@@ -256,6 +276,7 @@ impl MiniserveConfig {
             hide_version_footer: args.hide_version_footer,
             hide_theme_selector: args.hide_theme_selector,
             show_wget_footer: args.show_wget_footer,
+            readme: args.readme,
             tls_rustls_config: tls_rustls_server_config,
         })
     }
